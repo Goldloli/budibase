@@ -76,6 +76,31 @@ type MSSQLConfig =
   | AzureADMSSQLConfig
   | NTLMMSSQLConfig
 
+/**
+ * Builds the `authentication` block for an NTLM login.
+ *
+ * `mssql` builds its own tedious config with
+ * `Object.assign({ type, options: { userName, password, ... } }, config.authentication)`
+ * (`lib/tedious/connection-pool.js`), so whatever `options` we set here replaces
+ * the library's instead of merging with it. Leaving the credentials out made
+ * tedious read `undefined` when the server sent its NTLM challenge, which threw
+ * inside the connection pool and took the whole server down.
+ */
+export function buildNtlmAuthentication(config: {
+  user: string
+  password: string
+  domain: string
+}): sqlServer.config["authentication"] {
+  return {
+    type: "ntlm",
+    options: {
+      domain: config.domain,
+      userName: config.user,
+      password: config.password,
+    },
+  }
+}
+
 const SCHEMA: Integration = {
   docs: "https://github.com/tediousjs/node-mssql",
   plus: true,
@@ -326,13 +351,11 @@ class SqlServerIntegration
             throw Error("Domain must be provided for NTLM config")
           }
 
-          clientCfg.authentication = {
-            type: "ntlm",
-            // @ts-expect-error - username and password not required for NTLM
-            options: {
-              domain,
-            },
-          }
+          clientCfg.authentication = buildNtlmAuthentication({
+            user: this.config.user,
+            password: this.config.password,
+            domain,
+          })
           clientCfg.options ??= {}
           clientCfg.options.trustServerCertificate = !!trustServerCertificate
           break
@@ -345,6 +368,14 @@ class SqlServerIntegration
       }
 
       const pool = new sqlServer.ConnectionPool(clientCfg)
+
+      // mssql re-emits every non-ESOCKET tedious error on the pool
+      // (`lib/tedious/connection-pool.js`). Without a listener Node turns that
+      // into an uncaught exception, so a single failed connection attempt
+      // would take the server down instead of reaching the caller.
+      pool.on("error", (err: Error) => {
+        console.error("MSSQL connection pool error", err)
+      })
 
       this.client = await pool.connect()
     } catch (err: any) {

@@ -94,6 +94,9 @@ export default function createKoaApp() {
       logging.logAlert("Uncaught exception.", err)
       return
     }
+    // Log before shutting down. Without this the process exits with nothing in
+    // the logs to say why it died.
+    logging.logAlert("Uncaught exception.", err)
     await shutdown()
     if (!env.isTest()) {
       process.exit(1)
